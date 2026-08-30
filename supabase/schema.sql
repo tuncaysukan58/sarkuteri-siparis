@@ -96,7 +96,33 @@ CREATE TABLE IF NOT EXISTS public.store_settings (
     admin_pin TEXT DEFAULT '1234'
 );
 
--- Realtime yayını etkinleştir (Supabase Dashboard > Database > Replication altından da açılabilir)
+-- RLS (Row Level Security) İzinleri (Tüm tablolara tam okuma/yazma izni)
+ALTER TABLE public.categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.delivery_zones ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.order_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.store_settings ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public Full Access Categories" ON public.categories;
+CREATE POLICY "Public Full Access Categories" ON public.categories FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public Full Access Products" ON public.products;
+CREATE POLICY "Public Full Access Products" ON public.products FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public Full Access Zones" ON public.delivery_zones;
+CREATE POLICY "Public Full Access Zones" ON public.delivery_zones FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public Full Access Orders" ON public.orders;
+CREATE POLICY "Public Full Access Orders" ON public.orders FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public Full Access Order Items" ON public.order_items;
+CREATE POLICY "Public Full Access Order Items" ON public.order_items FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public Full Access Store Settings" ON public.store_settings;
+CREATE POLICY "Public Full Access Store Settings" ON public.store_settings FOR ALL USING (true) WITH CHECK (true);
+
+-- Realtime yayını etkinleştir
 ALTER PUBLICATION supabase_realtime ADD TABLE public.orders;
 ALTER PUBLICATION supabase_realtime ADD TABLE public.products;
 ALTER PUBLICATION supabase_realtime ADD TABLE public.categories;

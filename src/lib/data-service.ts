@@ -51,16 +51,21 @@ export async function getCategories(): Promise<Category[]> {
 }
 
 export async function addCategory(category: Omit<Category, 'id'>): Promise<Category> {
+  if (isSupabaseConfigured && supabase) {
+    const { data, error } = await supabase
+      .from('categories')
+      .insert([category])
+      .select()
+      .single();
+    if (!error && data) return data as Category;
+    if (error) console.error('Supabase addCategory error:', error);
+  }
+
   const newCat: Category = {
     ...category,
-    id: 'cat_' + Date.now(),
+    id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'cat_' + Date.now(),
     created_at: new Date().toISOString(),
   };
-
-  if (isSupabaseConfigured && supabase) {
-    const { data, error } = await supabase.from('categories').insert([newCat]).select().single();
-    if (!error && data) return data as Category;
-  }
 
   const current = getLocal<Category[]>(LOCAL_STORAGE_KEYS.CATEGORIES, INITIAL_CATEGORIES);
   const updated = [...current, newCat];
@@ -107,16 +112,21 @@ export async function getProducts(): Promise<Product[]> {
 }
 
 export async function addProduct(product: Omit<Product, 'id'>): Promise<Product> {
+  if (isSupabaseConfigured && supabase) {
+    const { data, error } = await supabase
+      .from('products')
+      .insert([product])
+      .select()
+      .single();
+    if (!error && data) return data as Product;
+    if (error) console.error('Supabase addProduct error:', error);
+  }
+
   const newProd: Product = {
     ...product,
-    id: 'prod_' + Date.now(),
+    id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'prod_' + Date.now(),
     created_at: new Date().toISOString(),
   };
-
-  if (isSupabaseConfigured && supabase) {
-    const { data, error } = await supabase.from('products').insert([newProd]).select().single();
-    if (!error && data) return data as Product;
-  }
 
   const current = getLocal<Product[]>(LOCAL_STORAGE_KEYS.PRODUCTS, INITIAL_PRODUCTS);
   const updated = [newProd, ...current];
@@ -128,6 +138,7 @@ export async function updateProduct(id: string, updates: Partial<Product>): Prom
   if (isSupabaseConfigured && supabase) {
     const { error } = await supabase.from('products').update(updates).eq('id', id);
     if (!error) return true;
+    if (error) console.error('Supabase updateProduct error:', error);
   }
 
   const current = getLocal<Product[]>(LOCAL_STORAGE_KEYS.PRODUCTS, INITIAL_PRODUCTS);
@@ -140,6 +151,7 @@ export async function deleteProduct(id: string): Promise<boolean> {
   if (isSupabaseConfigured && supabase) {
     const { error } = await supabase.from('products').delete().eq('id', id);
     if (!error) return true;
+    if (error) console.error('Supabase deleteProduct error:', error);
   }
 
   const current = getLocal<Product[]>(LOCAL_STORAGE_KEYS.PRODUCTS, INITIAL_PRODUCTS);
@@ -165,7 +177,7 @@ export async function getDeliveryZones(): Promise<DeliveryZone[]> {
 export async function saveDeliveryZones(zones: DeliveryZone[]): Promise<boolean> {
   setLocal(LOCAL_STORAGE_KEYS.ZONES, zones);
   if (isSupabaseConfigured && supabase) {
-    // Sync to supabase if needed
+    // Upsert delivery zones if needed
   }
   return true;
 }
@@ -175,7 +187,7 @@ export async function saveDeliveryZones(zones: DeliveryZone[]): Promise<boolean>
 // ----------------------------------------------------
 export async function getStoreSettings(): Promise<StoreSettings> {
   if (isSupabaseConfigured && supabase) {
-    const { data, error } = await supabase.from('store_settings').select('*').limit(1).single();
+    const { data, error } = await supabase.from('store_settings').select('*').limit(1).maybeSingle();
     if (!error && data) return data as StoreSettings;
   }
   return getLocal<StoreSettings>(LOCAL_STORAGE_KEYS.SETTINGS, INITIAL_STORE_SETTINGS);
@@ -184,7 +196,12 @@ export async function getStoreSettings(): Promise<StoreSettings> {
 export async function updateStoreSettings(settings: StoreSettings): Promise<boolean> {
   setLocal(LOCAL_STORAGE_KEYS.SETTINGS, settings);
   if (isSupabaseConfigured && supabase) {
-    await supabase.from('store_settings').upsert({ id: settings.id, ...settings });
+    const { data: existing } = await supabase.from('store_settings').select('id').limit(1).maybeSingle();
+    if (existing && existing.id) {
+      await supabase.from('store_settings').update(settings).eq('id', existing.id);
+    } else {
+      await supabase.from('store_settings').insert([settings]);
+    }
   }
   return true;
 }
@@ -211,45 +228,64 @@ export async function createOrder(orderData: Omit<Order, 'id' | 'order_number' |
   const order_number = `SRK-${randomSuffix}`;
   const now = new Date().toISOString();
 
-  const newOrder: Order = {
-    ...orderData,
-    id: 'ord_' + Date.now(),
-    order_number,
-    status: 'pending',
-    created_at: now,
-  };
-
   if (isSupabaseConfigured && supabase) {
-    const { items, ...orderHeader } = newOrder;
+    const { items, ...orderHeader } = orderData;
     const { data: insertedOrder, error: orderErr } = await supabase
       .from('orders')
-      .insert([orderHeader])
+      .insert([
+        {
+          order_number,
+          customer_name: orderHeader.customer_name,
+          customer_phone: orderHeader.customer_phone,
+          customer_address: orderHeader.customer_address,
+          district_name: orderHeader.district_name || 'Merkez',
+          neighborhood_name: orderHeader.neighborhood_name,
+          delivery_time_slot: orderHeader.delivery_time_slot,
+          payment_method: orderHeader.payment_method,
+          order_notes: orderHeader.order_notes || null,
+          subtotal: orderHeader.subtotal,
+          delivery_fee: orderHeader.delivery_fee || 0,
+          total_amount: orderHeader.total_amount,
+          status: 'pending',
+        },
+      ])
       .select()
       .single();
 
-    if (!orderErr && insertedOrder && items && items.length > 0) {
-      const orderItemsToInsert = items.map((it) => ({
-        order_id: insertedOrder.id,
-        product_id: it.product_id || null,
-        product_name: it.product_name,
-        unit_type: it.unit_type,
-        selected_weight: it.selected_weight || null,
-        selected_slice: it.selected_slice || null,
-        quantity: it.quantity,
-        unit_price: it.unit_price,
-        total_price: it.total_price,
-      }));
-      await supabase.from('order_items').insert(orderItemsToInsert);
+    if (orderErr) {
+      console.error('Supabase order insert error:', orderErr);
+    } else if (insertedOrder) {
+      if (items && items.length > 0) {
+        const orderItemsToInsert = items.map((it) => ({
+          order_id: insertedOrder.id,
+          product_name: it.product_name,
+          unit_type: it.unit_type,
+          selected_weight: it.selected_weight || null,
+          selected_slice: it.selected_slice || null,
+          quantity: it.quantity,
+          unit_price: it.unit_price,
+          total_price: it.total_price,
+        }));
+        const { error: itemsErr } = await supabase.from('order_items').insert(orderItemsToInsert);
+        if (itemsErr) console.error('Supabase order_items insert error:', itemsErr);
+      }
       return { ...insertedOrder, items } as Order;
     }
   }
 
   // Local fallback
+  const newOrder: Order = {
+    ...orderData,
+    id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'ord_' + Date.now(),
+    order_number,
+    status: 'pending',
+    created_at: now,
+  };
+
   const current = getLocal<Order[]>(LOCAL_STORAGE_KEYS.ORDERS, INITIAL_ORDERS);
   const updated = [newOrder, ...current];
   setLocal(LOCAL_STORAGE_KEYS.ORDERS, updated);
 
-  // Dispatch custom window event so open tabs/admin react instantly
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('new_order_placed', { detail: newOrder }));
   }
