@@ -129,9 +129,10 @@ export default function AdminOrdersPage() {
       fetchOrders();
 
       // Supabase Realtime channel for instant order popup
-      let channel: ReturnType<typeof supabase.channel> | null = null;
+      let channel: any = null;
       if (isSupabaseConfigured && supabase) {
-        channel = supabase
+        const client = supabase;
+        channel = client
           .channel('realtime-orders-admin')
           .on(
             'postgres_changes',
