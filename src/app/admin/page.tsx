@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { AdminNav } from '@/components/AdminNav';
 import { Order, OrderStatus } from '@/types/database';
 import { getOrders, updateOrderStatus } from '@/lib/data-service';
+import { isSupabaseConfigured, supabase } from '@/lib/supabase/client';
 import {
   Search,
   Printer,
@@ -18,6 +19,7 @@ import {
   VolumeX,
   Lock,
   RefreshCw,
+  Bell,
 } from 'lucide-react';
 
 export default function AdminOrdersPage() {
@@ -32,7 +34,44 @@ export default function AdminOrdersPage() {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
 
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Store known order IDs to detect brand new incoming orders
+  const knownOrderIds = useRef<Set<string>>(new Set());
+  const isInitialLoad = useRef(true);
+
+  // Pleasant Ding-Dong Doorbell sound generator
+  const playOrderChime = () => {
+    if (!soundEnabled) return;
+    try {
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const ctx = new AudioCtx();
+
+      // First Ding (High tone 784 Hz - G5)
+      const osc1 = ctx.createOscillator();
+      const gain1 = ctx.createGain();
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(784, ctx.currentTime);
+      gain1.gain.setValueAtTime(0.5, ctx.currentTime);
+      gain1.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
+      osc1.connect(gain1);
+      gain1.connect(ctx.destination);
+      osc1.start(ctx.currentTime);
+      osc1.stop(ctx.currentTime + 0.6);
+
+      // Second Dong (Lower tone 587 Hz - D5)
+      const osc2 = ctx.createOscillator();
+      const gain2 = ctx.createGain();
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(587, ctx.currentTime + 0.25);
+      gain2.gain.setValueAtTime(0.6, ctx.currentTime + 0.25);
+      gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.2);
+      osc2.connect(gain2);
+      gain2.connect(ctx.destination);
+      osc2.start(ctx.currentTime + 0.25);
+      osc2.stop(ctx.currentTime + 1.2);
+    } catch (e) {
+      console.error('Audio chime error:', e);
+    }
+  };
 
   // Check auth session
   useEffect(() => {
@@ -49,6 +88,8 @@ export default function AdminOrdersPage() {
       setIsAuthenticated(true);
       sessionStorage.setItem('sarkuteri_admin_auth', 'true');
       setPinError(false);
+      // Prime audio context on user click
+      playOrderChime();
     } else {
       setPinError(true);
     }
@@ -63,6 +104,18 @@ export default function AdminOrdersPage() {
     setIsLoading(true);
     try {
       const data = await getOrders();
+
+      // Check if new orders arrived since last fetch
+      if (!isInitialLoad.current && data && data.length > 0) {
+        const hasNewOrder = data.some((o) => !knownOrderIds.current.has(o.id) && o.status === 'pending');
+        if (hasNewOrder) {
+          playOrderChime();
+        }
+      }
+
+      // Update known IDs
+      data.forEach((o) => knownOrderIds.current.add(o.id));
+      isInitialLoad.current = false;
       setOrders(data);
     } catch (e) {
       console.error(e);
@@ -75,32 +128,45 @@ export default function AdminOrdersPage() {
     if (isAuthenticated) {
       fetchOrders();
 
-      // Listen for local new order events or polling
-      const handleNewOrder = () => {
-        fetchOrders();
-        if (soundEnabled) {
-          try {
-            const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.connect(gain);
-            gain.connect(ctx.destination);
-            osc.frequency.setValueAtTime(800, ctx.currentTime);
-            gain.gain.setValueAtTime(0.3, ctx.currentTime);
-            osc.start();
-            osc.stop(ctx.currentTime + 0.3);
-          } catch (e) {
-            console.error('Audio play error', e);
-          }
-        }
-      };
+      // Supabase Realtime channel for instant order popup
+      let channel: ReturnType<typeof supabase.channel> | null = null;
+      if (isSupabaseConfigured && supabase) {
+        channel = supabase
+          .channel('realtime-orders-admin')
+          .on(
+            'postgres_changes',
+            { event: 'INSERT', schema: 'public', table: 'orders' },
+            () => {
+              playOrderChime();
+              fetchOrders();
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: 'UPDATE', schema: 'public', table: 'orders' },
+            () => {
+              fetchOrders();
+            }
+          )
+          .subscribe();
+      }
 
-      window.addEventListener('new_order_placed', handleNewOrder);
-      const interval = setInterval(fetchOrders, 15000);
+      // Local storage cross-tab event
+      const handleLocalNewOrder = () => {
+        playOrderChime();
+        fetchOrders();
+      };
+      window.addEventListener('new_order_placed', handleLocalNewOrder);
+
+      // 10-second polling fallback
+      const interval = setInterval(fetchOrders, 10000);
 
       return () => {
-        window.removeEventListener('new_order_placed', handleNewOrder);
+        window.removeEventListener('new_order_placed', handleLocalNewOrder);
         clearInterval(interval);
+        if (channel && supabase) {
+          supabase.removeChannel(channel);
+        }
       };
     }
   }, [isAuthenticated, soundEnabled]);
@@ -199,16 +265,26 @@ export default function AdminOrdersPage() {
             </div>
 
             <div className="flex items-center gap-2">
+              {/* Test Sound Bell Button */}
+              <button
+                onClick={playOrderChime}
+                className="bg-amber-500 hover:bg-amber-600 text-stone-950 p-2.5 rounded-xl border border-amber-600 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
+                title="Sipariş Uyarı Zilini Çal"
+              >
+                <Bell className="w-4 h-4" />
+                <span>Zili Test Et</span>
+              </button>
+
               <button
                 onClick={() => setSoundEnabled(!soundEnabled)}
                 className={`p-2.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-colors ${
                   soundEnabled
-                    ? 'bg-amber-100 text-amber-900 border-amber-300'
+                    ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
                     : 'bg-stone-200 text-stone-600 border-stone-300'
                 }`}
                 title={soundEnabled ? 'Sesli Uyarı Açık' : 'Sesli Uyarı Kapalı'}
               >
-                {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+                {soundEnabled ? <Volume2 className="w-4 h-4 text-emerald-700" /> : <VolumeX className="w-4 h-4" />}
                 <span className="hidden sm:inline">Ses {soundEnabled ? 'Açık' : 'Kapalı'}</span>
               </button>
 
@@ -280,7 +356,7 @@ export default function AdminOrdersPage() {
                   <div
                     key={order.id}
                     className={`bg-white rounded-3xl p-5 sm:p-6 border transition-all shadow-sm hover:shadow-md ${
-                      isPending ? 'border-amber-400 bg-amber-50/20' : 'border-stone-200'
+                      isPending ? 'border-amber-400 bg-amber-50/30 ring-2 ring-amber-400/30' : 'border-stone-200'
                     }`}
                   >
                     <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-stone-100 pb-4">
@@ -299,7 +375,7 @@ export default function AdminOrdersPage() {
                           <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500 mt-0.5">
                             <span className="flex items-center gap-1">
                               <Phone className="w-3 h-3 text-stone-400" />
-                              <a href={`tel:${order.customer_phone}`} className="hover:underline font-medium">
+                              <a href={`tel:${order.customer_phone}`} className="hover:underline font-medium text-emerald-800 font-bold">
                                 {order.customer_phone}
                               </a>
                             </span>
@@ -361,12 +437,12 @@ export default function AdminOrdersPage() {
                       </div>
 
                       {/* Address & Payment Details */}
-                      <div className="md:col-span-5 space-y-2 bg-amber-50/40 p-3 rounded-2xl border border-amber-200/50">
+                      <div className="md:col-span-5 space-y-2 bg-amber-50/50 p-3 rounded-2xl border border-amber-200/60">
                         <div className="flex items-start gap-2">
                           <MapPin className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
                           <div>
                             <span className="font-bold text-stone-900">{order.neighborhood_name}</span>
-                            <p className="text-stone-600 mt-0.5">{order.customer_address}</p>
+                            <p className="text-stone-600 mt-0.5 font-medium">{order.customer_address}</p>
                           </div>
                         </div>
 
@@ -386,7 +462,7 @@ export default function AdminOrdersPage() {
                         </div>
 
                         {order.order_notes && (
-                          <div className="pt-1 text-[11px] text-amber-900 font-semibold">
+                          <div className="pt-1 text-[11px] text-amber-950 font-bold bg-amber-100/60 p-1.5 rounded-lg">
                             📝 Not: {order.order_notes}
                           </div>
                         )}
@@ -408,7 +484,7 @@ export default function AdminOrdersPage() {
                         {order.status === 'pending' && (
                           <button
                             onClick={() => handleStatusChange(order.id, 'preparing')}
-                            className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 shadow-sm"
+                            className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 shadow-sm active:scale-95"
                           >
                             <PackageCheck className="w-3.5 h-3.5" />
                             <span>Hazırlanıyor&apos;a Al</span>
@@ -418,7 +494,7 @@ export default function AdminOrdersPage() {
                         {order.status === 'preparing' && (
                           <button
                             onClick={() => handleStatusChange(order.id, 'on_way')}
-                            className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 shadow-sm"
+                            className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 shadow-sm active:scale-95"
                           >
                             <Bike className="w-3.5 h-3.5" />
                             <span>Kuryeye Ver</span>
@@ -428,7 +504,7 @@ export default function AdminOrdersPage() {
                         {order.status === 'on_way' && (
                           <button
                             onClick={() => handleStatusChange(order.id, 'delivered')}
-                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 shadow-sm"
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 shadow-sm active:scale-95"
                           >
                             <CheckCircle2 className="w-3.5 h-3.5" />
                             <span>Teslim Edildi</span>
